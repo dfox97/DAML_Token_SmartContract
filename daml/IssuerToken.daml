@@ -1,0 +1,72 @@
+module IssuerToken where
+
+type WalletID = ContractId Wallet
+
+template Wallet
+  with
+    owner : Party
+    issuer : Party
+    tokens : Int
+    maxTokens: Int
+    -- name: to differentiate different tokens
+  where
+    signatory issuer
+    observer owner
+    ensure tokens >=0 && tokens <= maxTokens
+    
+    -- The issuer can freely update wallets.
+    controller issuer can 
+    -- Only approved people can RequestTokens
+      nonconsuming ApprovedInvestors: WalletID
+        with 
+          investor: Party
+          _maxTokens: Int
+        do create Wallet with 
+              owner = investor
+              issuer = issuer
+              tokens = 0
+              maxTokens = _maxTokens
+    
+      -- Transfer tokens to another wallet, returning the updated source and target wallets.
+      TransferTokens: (WalletID, WalletID)
+        with 
+          quantity: Int  
+          toWalletId: WalletID
+        do
+          remainingBalance <- create this with tokens = tokens - quantity
+          toWallet <- fetch toWalletId
+          _ <- exercise toWalletId Archive
+          updateBalance <- create toWallet with tokens = toWallet.tokens + quantity
+          return (remainingBalance, updateBalance)
+
+    -- Delegates to TransferTokens with the requested quantity.
+      nonconsuming AcceptTokenRequest: (WalletID, WalletID)
+        with requestId: ContractId TokenRequest
+        do 
+          request <- fetch requestId
+          exercise self TransferTokens with 
+                        quantity = request.quantity
+                        toWalletId = request.walletId
+    
+    -- The owner, being only an observer, needs to create `RequestTokens` rather than
+    -- updating the contract. In other words, they have a read-only view.
+    controller owner can
+      -- Creates a new type of 'request' contract. Does not modify the existing contract.
+      nonconsuming RequestTokens: ContractId TokenRequest
+        with 
+          requestedQuantity: Int
+        do create TokenRequest with 
+            issuer = this.issuer
+            owner = this.owner
+            walletId = self
+            quantity = requestedQuantity
+
+-- Separate contract which allows an investor to initiate transfers.
+template TokenRequest
+  with
+    issuer: Party
+    owner: Party
+    walletId: WalletID
+    quantity: Int
+  where
+    signatory owner,issuer
